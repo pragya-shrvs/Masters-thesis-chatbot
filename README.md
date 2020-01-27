@@ -39,6 +39,6 @@ This model does not encode the sentence into a single fixed-length vector. Inste
 ## Result
 Seq2Seq model with the attention mechanism has shown significant improvement in the BLEU score of the translation task applied on TIDES-IIIT English-Hindi corpus. But the same model didn't result much change in the perplexity on the cornell movie datset.
 
-<image src="images/BLEU_score.jpeg">
+<image src="images/BLEU_score.JPG">
 
 This shows that the attention mechanism is useful in learning the alignment between the source and target words in MT task rather than on a mere question-answering task.
