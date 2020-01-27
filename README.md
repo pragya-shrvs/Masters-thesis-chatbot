@@ -2,7 +2,7 @@
 Master Thesis Project: Developed a Chatbot using NLP and RNN 
 
 ## Project Overview
-The project aims to develop a chatbot which can reply domain-related questions. This project presents an end-to-end sequence to sequence mapping architecture that has been used for machine translation. The model learn the semantic and syntactic relations between the source and target sentence pairs by maximizing the likelihood of the target sentence given the source.
+The project aims to develop a chatbot which can reply domain-related questions. The project presents various end-to-end sequence to sequence mapping architectures that have been used for machine translation. These models learn the semantic and syntactic relations between the source and target sentence pairs by maximizing the likelihood of the target sentence given the source.
 
 ## Datasets
   ### Cornell movie dataset
@@ -25,20 +25,17 @@ The project aims to develop a chatbot which can reply domain-related questions. 
   * sampled softmax with 1024 samples
   * batch size 32
 
-## Base model & Datasets
-Seq2Seq model with the attention mechanism has shown significant improvement in the BLEU score of the translation task applied on TIDES-IIIT English-Hindi corpus. But the same model didn't result much change in the perplexity on the cornell movie datset. 
+## Models used
+Various Sequence to Sequence models are used. The goal is to evaluate which model works best to map one sequence(questions) to another sequence(answer).
 
-## Setup
-Encoder-Decoder LSTM model is being trained with the following model parameters:
-  * source sequence size(maximum) = 20
-  * target sequence size(maximum) = 5
-  * Vocabulary size(Source side) = 400
-  * Vocabulary size(Target side) = 200
-  * Number of layers = 2
-  * Number of neurons (Each layer) = 128
-  * Embedding size = 24
-  * Learning rate (initial) = 0.5
-  * Learning decay rate = 0.99
+### Basic Seq2Seq model
+The simplest approach for sequence to sequence mapping is to convert the sequence of inputs to a fixed-sized vector using one RNN, and then to map the vector to the target sequence with another RNN. Since LSTMs are better at learning long-range time dependencies than RNN, I have use LSTMs here instead of RNNs.
+This approach has been used in English to French translation task (Sutskever et al., 2014).
+
+### Seq2Seq Model with attention mechanism
+This model does not encode the sentence into a single fixed-length vector. Instead, it encodes the input sentence into a sequence of vectors and chooses a subset of these vectors adaptively while decoding. This frees the model from compressing the input sequence into a fixed-length vector irrespective of source sentence length. This new model allows the decoder to peek into input at every decoding step.
+
+Seq2Seq model with the attention mechanism has shown significant improvement in the BLEU score of the translation task applied on TIDES-IIIT English-Hindi corpus. But the same model didn't result much change in the perplexity on the cornell movie datset. 
 
 ## Result
 This shows that the attention mechanism is useful in learning the alignment between the source and target words in MT task rather than on a mere question-answering task.
