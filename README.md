@@ -35,7 +35,10 @@ This approach has been used in English to French translation task (Sutskever et 
 ### Seq2Seq Model with attention mechanism
 This model does not encode the sentence into a single fixed-length vector. Instead, it encodes the input sentence into a sequence of vectors and chooses a subset of these vectors adaptively while decoding. This frees the model from compressing the input sequence into a fixed-length vector irrespective of source sentence length. This new model allows the decoder to peek into input at every decoding step.
 
-Seq2Seq model with the attention mechanism has shown significant improvement in the BLEU score of the translation task applied on TIDES-IIIT English-Hindi corpus. But the same model didn't result much change in the perplexity on the cornell movie datset. 
 
 ## Result
+Seq2Seq model with the attention mechanism has shown significant improvement in the BLEU score of the translation task applied on TIDES-IIIT English-Hindi corpus. But the same model didn't result much change in the perplexity on the cornell movie datset.
+
+<image src="images/BLEU_score.jpeg">
+
 This shows that the attention mechanism is useful in learning the alignment between the source and target words in MT task rather than on a mere question-answering task.
