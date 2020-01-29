@@ -28,30 +28,6 @@ import tensorflow as tf
 import data_utils
 import seq2seq
 
-def exp_decay(i):
-  i_t = tf.cast(i, tf.float32)
-  p = tf.constant(0.000001, tf.float32)
-  k = tf.pow(p,i_t)
-  return k
-
-def inv_sig_decay(i):
-  i_t = tf.cast(i, tf.float32)
-  k = tf.constant(400, tf.float32)
-  inter = tf.exp(i_t/k)
-  final = k/(k+inter)
-  return final
-
-def sampling(eps, iteration, decoder_size):
-  k = []
-  for i in range(decoder_size):
-    rand = np.random.random_sample()
-    k.append(rand)
-  k = tf.cast(k, tf.float32)
-  k = tf.less(k, eps)
-  k = tf.cast(k, tf.bool)
-  return k
-    
-
 class Seq2SeqModel(object):
   """Sequence-to-sequence model with attention and for multiple buckets.
 
@@ -70,7 +46,7 @@ class Seq2SeqModel(object):
   def __init__(self, source_vocab_size, target_vocab_size, buckets, size,
                num_layers, max_gradient_norm, batch_size, embedding_size, learning_rate,
                learning_rate_decay_factor, use_lstm=False,
-               num_samples=2048, forward_only=False, dtype=tf.float32):
+               num_samples=1024, forward_only=False, dtype=tf.float32):
     """Create the model.
 
     Args:
@@ -121,28 +97,25 @@ class Seq2SeqModel(object):
     # Create the internal multi-layer cell for our RNN.
     single_cell = tf.nn.rnn_cell.GRUCell(size)
     if use_lstm:
-      single_cell = tf.nn.rnn_cell.BasicLSTMCell(size, state_is_tuple=True)
+      single_cell = tf.nn.rnn_cell.BasicLSTMCell(size, state_is_tuple=False)
     cell = single_cell
     if num_layers > 1:
-      cell = tf.nn.rnn_cell.MultiRNNCell([single_cell] * num_layers, state_is_tuple=True)
+      cell = tf.nn.rnn_cell.MultiRNNCell([single_cell] * num_layers, state_is_tuple=False)
 
     # The seq2seq function: we use embedding for the input and attention.
     def seq2seq_f(encoder_inputs, decoder_inputs, do_decode):
-      #print(do_decode[0].dtype)
-      return seq2seq.embedding_attention_seq2seq(
+      return seq2seq.embedding_rnn_seq2seq(
           encoder_inputs, decoder_inputs, cell,
-          do_decode, 
           num_encoder_symbols=source_vocab_size,
           num_decoder_symbols=target_vocab_size,
           embedding_size=embedding_size,
           output_projection=output_projection,
-          dtype=dtype)
+          feed_previous=do_decode, dtype=dtype)
 
     # Feeds for inputs.
     self.encoder_inputs = []
     self.decoder_inputs = []
     self.target_weights = []
-    self.decode = []
     for i in xrange(buckets[-1][0]):  # Last bucket is the biggest one.
       self.encoder_inputs.append(tf.placeholder(tf.int32, shape=[None],
                                                 name="encoder_{0}".format(i)))
@@ -151,20 +124,16 @@ class Seq2SeqModel(object):
                                                 name="decoder_{0}".format(i)))
       self.target_weights.append(tf.placeholder(tf.float32, shape=[None],
                                                 name="weight_{0}".format(i)))
-      self.decode.append(tf.placeholder(tf.bool, name='decode_{0}'.format(i)))
-    #self.iteration = tf.placeholder(tf.float32)
-    #self.eps = exp_decay(self.iteration)
-    #self.decode = sampling(self.eps, self.iteration, buckets[-1][1]+1)
-    #self.decode = tf.placeholder(tf.bool, shape=[buckets[-1][1]+1], name='decode')
+
     # Our targets are decoder inputs shifted by one.
     targets = [self.decoder_inputs[i + 1]
                for i in xrange(len(self.decoder_inputs) - 1)]
 
     # Training outputs and losses.
     if forward_only:
-      self.states, self.outputs, self.losses = seq2seq.model_with_buckets(
+      self.outputs, self.losses =seq2seq.model_with_buckets(
           self.encoder_inputs, self.decoder_inputs, targets,
-          self.target_weights, buckets, lambda x, y: seq2seq_f(x, y, self.decode),
+          self.target_weights, buckets, lambda x, y: seq2seq_f(x, y, True),
           softmax_loss_function=softmax_loss_function)
       # If we use output projection, we need to project outputs for decoding.
       if output_projection is not None:
@@ -173,13 +142,11 @@ class Seq2SeqModel(object):
               tf.matmul(output, output_projection[0]) + output_projection[1]
               for output in self.outputs[b]
           ]
-      for b in xrange(len(buckets)):
-        self.outputs[b] = [tf.nn.log_softmax(output) for output in self.outputs[b]]
     else:
-      self.states, self.outputs, self.losses = seq2seq.model_with_buckets(
+      self.outputs, self.losses = seq2seq.model_with_buckets(
           self.encoder_inputs, self.decoder_inputs, targets,
           self.target_weights, buckets,
-          lambda x, y: seq2seq_f(x, y, self.decode),
+          lambda x, y: seq2seq_f(x, y, False),
           softmax_loss_function=softmax_loss_function)
      
     # Gradients and SGD update operation for training the model.
@@ -199,7 +166,7 @@ class Seq2SeqModel(object):
     self.saver = tf.train.Saver(tf.all_variables())
 
   def step(self, session, encoder_inputs, decoder_inputs, target_weights,
-           bucket_id, decode, forward_only):
+           bucket_id, forward_only):
     """Run a step of the model feeding the given inputs.
 
     Args:
@@ -234,13 +201,9 @@ class Seq2SeqModel(object):
     input_feed = {}
     for l in xrange(encoder_size):
       input_feed[self.encoder_inputs[l].name] = encoder_inputs[l]
-
     for l in xrange(decoder_size):
       input_feed[self.decoder_inputs[l].name] = decoder_inputs[l]
       input_feed[self.target_weights[l].name] = target_weights[l]
-      
-    for l in xrange(self.buckets[-1][1]+1):
-      input_feed[self.decode[l].name] = decode[l]
 
     # Since our targets are decoder inputs shifted by one, we need one more.
     last_target = self.decoder_inputs[decoder_size].name
@@ -248,24 +211,20 @@ class Seq2SeqModel(object):
 
     # Output feed: depends on whether we do a backward step or not.
     if not forward_only:
-      output_feed = [self.states[bucket_id],
-                     self.updates[bucket_id],  # Update Op that does SGD.
+      output_feed = [self.updates[bucket_id],  # Update Op that does SGD.
                      self.gradient_norms[bucket_id],  # Gradient norm.
                      self.losses[bucket_id]]  # Loss for this batch.
     else:
-      output_feed = [self.states[bucket_id], self.losses[bucket_id]]  # Loss for this batch.
+      output_feed = [self.losses[bucket_id]]  # Loss for this batch.
       for l in xrange(decoder_size):  # Output logits.
         output_feed.append(self.outputs[bucket_id][l])
 
-    #decode = session.run([self.decode,self.eps], {self.iteration:current_step})
-    #if current_step%200 == 0:
-    #print("epsilon value: ", decode[0])
     outputs= session.run(output_feed, input_feed)
 
     if not forward_only:
-      return outputs[2], outputs[3], None, None  # Gradient norm, loss, no outputs, no state
+      return outputs[1], outputs[2], None  # Gradient norm, loss, no outputs.
     else:
-      return None, outputs[1], outputs[2:], outputs[0]  # No gradient norm, loss, outputs, state
+      return None, outputs[0], outputs[1:]  # No gradient norm, loss, outputs.
 
   def get_batch(self, data, bucket_id):
     """Get a random batch of data from the specified bucket, prepare for step.

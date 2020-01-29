@@ -47,14 +47,14 @@ tf.app.flags.DEFINE_float("learning_rate_decay_factor", 0.99,
                           "Learning rate decays by this much.")
 tf.app.flags.DEFINE_float("max_gradient_norm", 5.0,
                           "Clip gradients to this norm.")
-tf.app.flags.DEFINE_integer("batch_size", 64,
+tf.app.flags.DEFINE_integer("batch_size", 32,
                             "Batch size to use during training.")
 tf.app.flags.DEFINE_integer("embedding_size", 32,
                             "size of word embeddings")
 tf.app.flags.DEFINE_integer("size", 1024, "Size of each model layer.")
 tf.app.flags.DEFINE_integer("num_layers", 3, "Number of layers in the model.")
-tf.app.flags.DEFINE_integer("eng_vocab_size", 40000, "English vocabulary size.")
-tf.app.flags.DEFINE_integer("hin_vocab_size", 40000, "Hindi vocabulary size.")
+tf.app.flags.DEFINE_integer("en_vocab_size", 40000, "English vocabulary size.")
+tf.app.flags.DEFINE_integer("fr_vocab_size", 40000, "French vocabulary size.")
 tf.app.flags.DEFINE_string("data_dir", "/tmp", "Data directory")
 tf.app.flags.DEFINE_string("train_dir", "/tmp", "Training directory.")
 tf.app.flags.DEFINE_integer("max_train_data_size", 0,
@@ -63,8 +63,6 @@ tf.app.flags.DEFINE_integer("steps_per_checkpoint", 200,
                             "How many training steps to do per checkpoint.")
 tf.app.flags.DEFINE_boolean("decode", False,
                             "Set to True for interactive decoding.")
-tf.app.flags.DEFINE_boolean("decode_all", False,
-                            "Set to True for decoding all at once.")
 tf.app.flags.DEFINE_boolean("self_test", False,
                             "Run a self-test if this is set to True.")
 tf.app.flags.DEFINE_boolean("use_fp16", False,
@@ -74,23 +72,8 @@ FLAGS = tf.app.flags.FLAGS
 
 # We use a number of buckets and pad to the closest one for efficiency.
 # See seq2seq_model.Seq2SeqModel for details of how they work.
-_buckets = [(10,15),(20,25),(35,35)]
+_buckets = [(10, 15), (20, 20)]
 
-def exp_decay(i):
-  i_t = float(i)
-  k = 0.999995
-  if i_t < 50000:
-    return 1.0
-  else: 
-    return np.power(k, i_t-50000)  
-
-def sampling(eps, iteration, decoder_size):
-  k = []
-  for i in range(decoder_size):
-    rand = np.random.random_sample()
-    k.append(rand)
-  k = np.array(k)
-  return k < eps
 
 def read_data(source_path, target_path, max_size=None):
   """Read data from source and target files and put into buckets.
@@ -132,8 +115,8 @@ def create_model(session, forward_only):
   """Create translation model and initialize or load parameters in session."""
   dtype = tf.float16 if FLAGS.use_fp16 else tf.float32
   model = seq2seq_model.Seq2SeqModel(
-      FLAGS.eng_vocab_size,
-      FLAGS.hin_vocab_size,
+      FLAGS.en_vocab_size,
+      FLAGS.fr_vocab_size,
       _buckets,
       FLAGS.size,
       FLAGS.num_layers,
@@ -160,15 +143,12 @@ def train():
   # Prepare WMT data.
   print("Preparing WMT data in %s" % FLAGS.data_dir)
   en_train, fr_train, en_dev, fr_dev, _, _ = data_utils.prepare_wmt_data(
-      FLAGS.data_dir, FLAGS.eng_vocab_size, FLAGS.hin_vocab_size)
+      FLAGS.data_dir, FLAGS.en_vocab_size, FLAGS.fr_vocab_size)
 
-  save_path = os.path.join(FLAGS.train_dir, "summary/")
   with tf.Session() as sess:
     # Create model.
     print("Creating %d layers of %d units." % (FLAGS.num_layers, FLAGS.size))
     model = create_model(sess, False)
-    test_writer = tf.train.SummaryWriter(os.path.join(save_path,'test'), graph=sess.graph)
-    train_writer = tf.train.SummaryWriter(os.path.join(save_path,'train'), graph=sess.graph)
 
     # Read data into buckets and compute their sizes.
     print ("Reading development and training data (limit: %d)."
@@ -188,49 +168,33 @@ def train():
     step_time, loss = 0.0, 0.0
     current_step = 0
     previous_losses = []
-    perplexity_eval_summary = tf.Summary()
-    perplexity_train_summary = tf.Summary()
-    eps1 = exp_decay(float("inf"))
-    #print(eps1)
-    decode1 = sampling(eps1, float("inf"), _buckets[-1][1]+1)
-
-    while current_step < 80001:
+    while current_step < 50001:
       # Choose a bucket according to data distribution. We pick a random number
       # in [0, 1] and use the corresponding interval in train_buckets_scale.
       random_number_01 = np.random.random_sample()
       bucket_id = min([i for i in xrange(len(train_buckets_scale))
                        if train_buckets_scale[i] > random_number_01])
-      eps = exp_decay(current_step*1.0)
-      #print(eps)
-      decode = sampling(eps, current_step*1.0, _buckets[-1][1]+1)
+      #print(sess.run(model.global_step))
       # Get a batch and make a step.
       start_time = time.time()
       encoder_inputs, decoder_inputs, target_weights = model.get_batch(
           train_set, bucket_id)
-      _, step_loss, _, _ = model.step(sess, encoder_inputs, decoder_inputs,
-                                   target_weights, bucket_id, decode, False)
+      _, step_loss, _ = model.step(sess, encoder_inputs, decoder_inputs,
+                                   target_weights, bucket_id, False)
       step_time += (time.time() - start_time) / FLAGS.steps_per_checkpoint
-      #loss += step_loss / FLAGS.steps_per_checkpoint
-      loss = step_loss
+      loss += step_loss / FLAGS.steps_per_checkpoint
       current_step += 1
 
       # Once in a while, we save checkpoint, print statistics, and run evals.
       if current_step % FLAGS.steps_per_checkpoint == 0:
         # Print statistics for the previous epoch.
         perplexity = math.exp(float(loss)) if loss < 300 else float("inf")
-        bucket_trainvalue = perplexity_train_summary.value.add()
-        bucket_trainvalue.tag = "peplexity_trainbucket_%d" % bucket_id
-        bucket_trainvalue.simple_value = perplexity
-        train_writer.add_summary(perplexity_train_summary, model.global_step.eval())
         print ("global step %d learning rate %.4f step-time %.2f perplexity "
-               "%.2f bucketid: %d epsilon: %f" % (model.global_step.eval(), model.learning_rate.eval(),
-                         step_time, perplexity, bucket_id, eps))
+               "%.2f" % (model.global_step.eval(), model.learning_rate.eval(),
+                         step_time, perplexity))
         # Decrease learning rate if no improvement was seen over last 3 times.
         if len(previous_losses) > 2 and loss > max(previous_losses[-3:]):
           sess.run(model.learning_rate_decay_op)
-        learning_rate = tf.scalar_summary('learning_rate',model.learning_rate_decay_op)
-        learning_str = sess.run(learning_rate)
-        train_writer.add_summary(learning_str,model.global_step.eval())
         previous_losses.append(loss)
         # Save checkpoint and zero timer and loss.
         checkpoint_path = os.path.join(FLAGS.train_dir, "translate.ckpt")
@@ -243,14 +207,10 @@ def train():
             continue
           encoder_inputs, decoder_inputs, target_weights = model.get_batch(
               dev_set, bucket_id)
-          _, eval_loss, _, _ = model.step(sess, encoder_inputs, decoder_inputs,
-                                       target_weights, bucket_id, decode1, True)
+          _, eval_loss, _ = model.step(sess, encoder_inputs, decoder_inputs,
+                                       target_weights, bucket_id, True)
           eval_ppx = math.exp(float(eval_loss)) if eval_loss < 300 else float(
               "inf")
-          bucket_value = perplexity_eval_summary.value.add()
-          bucket_value.tag = "peplexity_evalbucket_%d" % bucket_id
-          bucket_value.simple_value = eval_ppx
-          test_writer.add_summary(perplexity_eval_summary, model.global_step.eval())
           print("  eval: bucket %d perplexity %.2f" % (bucket_id, eval_ppx))
         sys.stdout.flush()
 
@@ -260,12 +220,13 @@ def decode():
     # Create model and load parameters.
     model = create_model(sess, True)
     model.batch_size = 1  # We decode one sentence at a time.
+    #model.global_step = 0
 
     # Load vocabularies.
     en_vocab_path = os.path.join(FLAGS.data_dir,
-                                 "vocab%d.eng" % FLAGS.eng_vocab_size)
+                                 "vocab%d.en" % FLAGS.en_vocab_size)
     fr_vocab_path = os.path.join(FLAGS.data_dir,
-                                 "vocab%d.hin" % FLAGS.hin_vocab_size)
+                                 "vocab%d.fr" % FLAGS.fr_vocab_size)
     en_vocab, _ = data_utils.initialize_vocabulary(en_vocab_path)
     _, rev_fr_vocab = data_utils.initialize_vocabulary(fr_vocab_path)
 
@@ -273,109 +234,30 @@ def decode():
     sys.stdout.write("> ")
     sys.stdout.flush()
     sentence = sys.stdin.readline()
-    eps = exp_decay(float("inf"))
-    print(eps)
-    decode = sampling(eps, float("inf"), _buckets[-1][1]+1)
     while sentence:
       # Get token-ids for the input sentence.
-      token_ids = data_utils.sentence_to_token_ids(sentence, en_vocab)
+      token_ids = data_utils.sentence_to_token_ids(tf.compat.as_bytes(sentence), en_vocab)
+      # print(sess.run(model.global_step))
       # Which bucket does it belong to?
       bucket_id = min([b for b in xrange(len(_buckets))
                        if _buckets[b][0] > len(token_ids)])
-
       # Get a 1-element batch to feed the sentence to the model.
       encoder_inputs, decoder_inputs, target_weights = model.get_batch(
           {bucket_id: [(token_ids, [])]}, bucket_id)
       # Get output logits for the sentence.
-      _, _, output_logits, state = model.step(sess, encoder_inputs, decoder_inputs,
-                                       target_weights, bucket_id, decode, True)
+      _, _, output_logits = model.step(sess, encoder_inputs, decoder_inputs,
+                                       target_weights, bucket_id, True)
       # This is a greedy decoder - outputs are just argmaxes of output_logits.
       outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-      # probabilities
-      probs = [np.max(logit, axis=1) for logit in output_logits]
       # If there is an EOS symbol in outputs, cut them at that point.
       if data_utils.EOS_ID in outputs:
         outputs = outputs[:outputs.index(data_utils.EOS_ID)]
-      x = len(outputs)
-      probs = probs[:x]
-      conf_score = 0.0
-      for prob in probs:
-        #print(prob)
-        conf_score += prob
-      print("Confidence score:", conf_score)
       # Print out French sentence corresponding to outputs.
-      sentence2 = " ".join([rev_fr_vocab[output] for output in outputs])
-      #sentence2 = [tf.compat.as_str(rev_fr_vocab[output]) for output in outputs]
+      sentence2 = " ".join([tf.compat.as_str(rev_fr_vocab[output]) for output in outputs])
       print(sentence2)
-      f = open('answer.txt','a')
-      f.write(sentence2+"\n")
-      f.close()
       print("> ", end="")
       sys.stdout.flush()
       sentence = sys.stdin.readline()
-
-def decode_all():
-  with tf.Session() as sess:
-    # Create model and load parameters.
-    model = create_model(sess, True)
-    model.batch_size = 1  # We decode one sentence at a time.
-
-    # Load vocabularies.
-    en_vocab_path = os.path.join(FLAGS.data_dir,
-                                 "vocab%d.eng" % FLAGS.eng_vocab_size)
-    fr_vocab_path = os.path.join(FLAGS.data_dir,
-                                 "vocab%d.hin" % FLAGS.hin_vocab_size)
-    en_vocab, _ = data_utils.initialize_vocabulary(en_vocab_path)
-    _, rev_fr_vocab = data_utils.initialize_vocabulary(fr_vocab_path)
-
-    # Decode from standard input.
-    #sys.stdout.write("> ")
-    #sys.stdout.flush()
-    #sentence = sys.stdin.readline()
-    f = open('train1.eng','r')
-    g = open('decoded.hin','w')
-    i = 0
-    eps = exp_decay(float("inf"))
-    print(eps)
-    decode = sampling(eps, float("inf"), _buckets[-1][1]+1)
-
-    for line in f:
-      # Get token-ids for the input sentence.
-      sentence = line.strip()
-      print(i)
-      i += 1
-      token_ids = data_utils.sentence_to_token_ids(sentence, en_vocab)
-      # Which bucket does it belong to?
-      bucket_id = min([b for b in xrange(len(_buckets))
-                       if _buckets[b][0] > len(token_ids)])
-      # Get a 1-element batch to feed the sentence to the model.
-      encoder_inputs, decoder_inputs, target_weights = model.get_batch(
-          {bucket_id: [(token_ids, [])]}, bucket_id)
-      # Get output logits for the sentence.
-      _, _, output_logits, state = model.step(sess, encoder_inputs, decoder_inputs,
-                                       target_weights, bucket_id, decode, True)
-      # This is a greedy decoder - outputs are just argmaxes of output_logits.
-      outputs = [int(np.argmax(logit, axis=1)) for logit in output_logits]
-      # probabilities
-      probs = [np.max(logit, axis=1) for logit in output_logits]
-      # If there is an EOS symbol in outputs, cut them at that point.
-      if data_utils.EOS_ID in outputs:
-        outputs = outputs[:outputs.index(data_utils.EOS_ID)]
-      x = len(outputs)
-      probs = probs[:x]
-      conf_score = 0.0
-      for prob in probs:
-        #print(prob)
-        conf_score += prob
-      #print("Confidence score:", conf_score)
-      # Print out French sentence corresponding to outputs.
-      sentence2 = " ".join([rev_fr_vocab[output] for output in outputs])
-      #sentence2 = [tf.compat.as_str(rev_fr_vocab[output]) for output in outputs]
-      #print(sentence2)
-      g.write(sentence2+"\n")
-      #print("> ", end="")
-      #sys.stdout.flush()
-      #sentence = sys.stdin.readline()
 
 def self_test():
   """Test the translation model."""
@@ -402,8 +284,6 @@ def main(_):
     self_test()
   elif FLAGS.decode:
     decode()
-  elif FLAGS.decode_all:
-    decode_all()
   else:
     train()
 

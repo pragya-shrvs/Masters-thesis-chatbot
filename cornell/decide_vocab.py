@@ -4,6 +4,7 @@ import os
 _WORD_SPLIT = re.compile("([.,!?\"':;)(])")
 _DIGIT_RE = re.compile(r"\d")
 import matplotlib.pyplot as plt
+import nltk
 import gzip
 from tensorflow.python.platform import gfile
 
@@ -15,7 +16,7 @@ def basic_tokenizer(sentence):
   return [w for w in words if w]
 
 
-def create_vocabulary(data_path):
+def create_vocabulary(data_path, tokenizer=None):
   """Create vocabulary file (if it does not exist yet) from data file.
   Data file is assumed to contain one sentence per line. Each sentence is
   tokenized and digits are normalized (if normalize_digits is set).
@@ -38,7 +39,7 @@ def create_vocabulary(data_path):
       counter += 1
       if counter % 100000 == 0:
         print("  processing line %d" % counter)
-      tokens = basic_tokenizer(line)
+      tokens = tokenizer(line)
       for word in tokens:
         if word in vocab:
           vocab[word] += 1
@@ -49,18 +50,18 @@ def create_vocabulary(data_path):
   return vocab_list  
     
 
-data_dir='/home/philips/Downloads/UMC002-English-Hindi/tides-cleaned-by-ufal/'
-dev_name = 'valid1'
-train_name = 'train1'
+data_dir='/home/philips/Downloads/cornell2/'
+dev_name = 'questions_dev'
+train_name = 'questions_train'
 dev_path = os.path.join(data_dir, dev_name)
 train_path = os.path.join(data_dir, train_name)
 #print(train_path)
 
 # Create vocabularies of the appropriate sizes.
-en_list = create_vocabulary(train_path + ".hin")
+en_list = create_vocabulary(train_path + ".en", tokenizer=nltk.word_tokenize)
 print('Eng vocabulary: ', len(en_list))
 print(sum(en_list[:12000])/(sum(en_list)*1.0))
-fr_list = create_vocabulary(train_path + ".eng")
+fr_list = create_vocabulary(train_path + ".fr", tokenizer=nltk.word_tokenize)
 print("Hin Vocabulary: ",len(fr_list))
 print(sum(fr_list[:12000])/(sum(fr_list)*1.0))
 
@@ -76,9 +77,9 @@ else:
 
 x = range(0,L)
 lw = 1
-plt.plot(x[1000:2000], en_list[1000:2000], color = 'navy', lw=lw, label = 'english vocab')
+plt.plot(x[11000:12000], en_list[11000:12000], color = 'navy', lw=lw, label = 'english vocab')
 plt.hold('on')
-plt.plot(x[1000:2000], fr_list[1000:2000], color = 'c', lw=lw, label = 'hindi vocab')
+plt.plot(x[11000:12000], fr_list[11000:12000], color = 'c', lw=lw, label = 'hindi vocab')
 plt.hold('on')
 plt.xlabel('------> vocabulary')
 plt.ylabel('------> frequency')
